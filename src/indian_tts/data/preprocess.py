@@ -148,7 +148,12 @@ def download_svarah(
             except Exception:
                 pass
             if not token:
-                token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                # Check all common token env var names
+                for env_name in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_1", "HF_TOKEN_2"]:
+                    token = os.environ.get(env_name)
+                    if token:
+                        print(f"      Found token in ${env_name}")
+                        break
 
             if token:
                 print("      Retrying with explicit token...")
