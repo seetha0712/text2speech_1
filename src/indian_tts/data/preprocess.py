@@ -122,8 +122,16 @@ def download_svarah(
     try:
         ds = load_dataset("ai4bharat/Svarah", split="test")
     except Exception as e:
-        print(f"      ERROR: Failed to load Svarah: {e}")
-        print("      Try: pip install --upgrade datasets")
+        err_msg = str(e)
+        print(f"      ERROR: Failed to load Svarah: {err_msg[:200]}")
+        if "gated" in err_msg.lower() or "access" in err_msg.lower():
+            print("\n      This is a GATED dataset. To get access:")
+            print("      1. Go to: https://huggingface.co/datasets/ai4bharat/Svarah")
+            print("      2. Click 'Agree and access repository'")
+            print("      3. In Colab, run: from huggingface_hub import notebook_login; notebook_login()")
+            print("      4. Re-run this cell")
+        else:
+            print("      Try: pip install --upgrade datasets")
         return []
 
     print(f"      Loaded {len(ds)} samples")
@@ -256,33 +264,60 @@ def download_common_voice(
     os.makedirs(male_dir, exist_ok=True)
     os.makedirs(female_dir, exist_ok=True)
 
-    # Try community mirrors of Common Voice
-    mirrors = [
-        ("fsicoli/common_voice_22_0", "en", None),
-        ("fsicoli/common_voice_22_0", "en", "79f6f9bc661f9d0ede28dcae9787cdf8f2f07193"),
-    ]
-
+    # Strategy: try multiple approaches to load Common Voice English
     ds = None
-    for dataset_id, lang, revision in mirrors:
+
+    # Approach 1: Load from the auto-converted parquet branch
+    try:
+        print("      Trying fsicoli/common_voice_22_0 (parquet branch)...")
+        ds = load_dataset(
+            "fsicoli/common_voice_22_0",
+            "en",
+            split="train",
+            streaming=True,
+            revision="refs/convert/parquet",
+        )
+        _ = next(iter(ds))
+        print("      Loaded from parquet branch!")
+    except Exception as e:
+        print(f"      Parquet branch failed: {type(e).__name__}: {str(e)[:120]}")
+        ds = None
+
+    # Approach 2: Try loading parquet files directly by URL
+    if ds is None:
         try:
-            rev_str = f" (revision {revision[:8]}...)" if revision else ""
-            print(f"      Trying {dataset_id}{rev_str}...")
-            kwargs = {"path": dataset_id, "name": lang, "split": "train", "streaming": True}
-            if revision:
-                kwargs["revision"] = revision
-            ds = load_dataset(**kwargs)
-            # Test iteration
+            print("      Trying direct parquet file loading...")
+            ds = load_dataset(
+                "parquet",
+                data_files={"train": "hf://datasets/fsicoli/common_voice_22_0/en/train-*.parquet"},
+                split="train",
+                streaming=True,
+            )
             _ = next(iter(ds))
-            print(f"      Using {dataset_id}")
-            break
+            print("      Loaded from direct parquet files!")
         except Exception as e:
-            print(f"      Failed: {type(e).__name__}: {str(e)[:100]}")
+            print(f"      Direct parquet failed: {type(e).__name__}: {str(e)[:120]}")
+            ds = None
+
+    # Approach 3: Try an older pinned datasets version approach
+    if ds is None:
+        try:
+            print("      Trying malaysia-ai/common_voice_22_0 mirror...")
+            ds = load_dataset(
+                "malaysia-ai/common_voice_22_0",
+                "en",
+                split="train",
+                streaming=True,
+            )
+            _ = next(iter(ds))
+            print("      Loaded from malaysia-ai mirror!")
+        except Exception as e:
+            print(f"      Malaysia-ai mirror failed: {type(e).__name__}: {str(e)[:120]}")
             ds = None
 
     if ds is None:
-        print("      WARNING: Could not load Common Voice from any mirror.")
+        print("      WARNING: Could not load Common Voice from any source.")
         print("      Continuing with Svarah data only.")
-        print("      (This is OK — Svarah alone provides ~9.6 hours of Indian English)")
         return []
 
     entries = []
