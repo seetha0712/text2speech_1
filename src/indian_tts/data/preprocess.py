@@ -119,13 +119,39 @@ def download_common_voice(
 
     # Load with streaming to avoid downloading the entire 100GB+ dataset
     print("      Loading dataset (streaming mode)...")
-    ds = load_dataset(
-        "mozilla-foundation/common_voice_17_0",
-        "en",
-        split="train",
-        streaming=True,
-        trust_remote_code=True,
-    )
+
+    # Try multiple Common Voice versions (newer versions may change format)
+    cv_configs = [
+        ("mozilla-foundation/common_voice_17_0", "en"),
+        ("mozilla-foundation/common_voice_16_1", "en"),
+        ("mozilla-foundation/common_voice_16_0", "en"),
+    ]
+
+    ds = None
+    for dataset_id, lang in cv_configs:
+        try:
+            print(f"      Trying {dataset_id}...")
+            ds = load_dataset(
+                dataset_id,
+                lang,
+                split="train",
+                streaming=True,
+            )
+            # Test that we can iterate
+            _ = next(iter(ds))
+            print(f"      Using {dataset_id}")
+            break
+        except Exception as e:
+            print(f"      {dataset_id} failed: {type(e).__name__}: {e}")
+            ds = None
+            continue
+
+    if ds is None:
+        print("      ERROR: Could not load any Common Voice version.")
+        print("      You may need to accept the dataset terms on HuggingFace:")
+        print("      https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
+        print("      Then run: huggingface-cli login")
+        return []
 
     entries = []
     male_seconds = 0.0
@@ -286,7 +312,7 @@ def download_fleurs(
     for split in ["train", "validation", "test"]:
         print(f"      Loading {split} split...")
         try:
-            ds = load_dataset("google/fleurs", "en_in", split=split, trust_remote_code=True)
+            ds = load_dataset("google/fleurs", "en_in", split=split)
         except Exception as e:
             print(f"      Warning: Could not load {split}: {e}")
             continue
