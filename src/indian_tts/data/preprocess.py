@@ -177,20 +177,74 @@ def download_svarah(
 
     print(f"      Loaded {len(ds)} samples")
 
+    # Debug: show first sample structure
+    first = ds[0]
+    audio_key = "audio" if "audio" in first else "audio_filepath" if "audio_filepath" in first else None
+    print(f"      Audio field: '{audio_key}' -> {type(first.get(audio_key, None)).__name__}")
+    print(f"      Gender field: '{first.get('gender', 'MISSING')}'")
+    print(f"      Text field: '{str(first.get('text', 'MISSING'))[:50]}'")
+
     entries = []
     male_seconds = 0.0
     female_seconds = 0.0
     skipped = 0
 
     for i, sample in enumerate(ds):
-        # Get audio
-        audio_data = sample.get("audio")
+        # Get audio — Svarah uses 'audio_filepath', others use 'audio'
+        audio_data = sample.get("audio") or sample.get("audio_filepath")
         if audio_data is None:
             skipped += 1
             continue
 
-        sr = audio_data["sampling_rate"]
-        array = np.array(audio_data["array"], dtype=np.float32)
+        # Handle different audio formats
+        if isinstance(audio_data, dict):
+            # Standard HF format: {"array": [...], "sampling_rate": 22050}
+            sr = audio_data["sampling_rate"]
+            array = np.array(audio_data["array"], dtype=np.float32)
+        else:
+            # AudioDecoder or other object — try multiple extraction methods
+            extracted = False
+            # Method 1: Call it to get samples (torchcodec AudioDecoder)
+            if hasattr(audio_data, 'get_all_samples') or hasattr(audio_data, '__call__'):
+                try:
+                    if hasattr(audio_data, 'get_all_samples'):
+                        result = audio_data.get_all_samples()
+                        array = result.data.numpy().astype(np.float32).flatten()
+                        sr = result.sample_rate
+                    else:
+                        result = audio_data()
+                        array = result.numpy().astype(np.float32).flatten()
+                        sr = 16000
+                    extracted = True
+                except Exception:
+                    pass
+            # Method 2: Has .numpy() method
+            if not extracted and hasattr(audio_data, 'numpy'):
+                try:
+                    array = audio_data.numpy().astype(np.float32)
+                    if array.ndim > 1:
+                        array = array.mean(axis=0)
+                    sr = 16000
+                    extracted = True
+                except Exception:
+                    pass
+            # Method 3: Try converting to dict
+            if not extracted:
+                try:
+                    d = dict(audio_data) if hasattr(audio_data, '__iter__') else {}
+                    if "array" in d:
+                        array = np.array(d["array"], dtype=np.float32)
+                        sr = d.get("sampling_rate", 16000)
+                        extracted = True
+                except Exception:
+                    pass
+            if not extracted:
+                if i == 0:
+                    print(f"      DEBUG: Cannot extract audio from {type(audio_data).__name__}")
+                    print(f"      DEBUG: dir: {[x for x in dir(audio_data) if not x.startswith('_')][:15]}")
+                skipped += 1
+                continue
+
         duration = len(array) / sr
 
         # Duration filter
