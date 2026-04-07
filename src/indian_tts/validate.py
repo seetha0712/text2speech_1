@@ -316,6 +316,26 @@ def run_stage(stage_num: int, config: dict, resume_from: Optional[str] = None) -
 
     print(f"  Audio samples saved to: {sample_dir}/\n")
 
+    # ---- Generate podcast demo (same script every stage) ----
+    print(f"{'~' * 50}")
+    print(f"  Generating podcast demo (same script at every stage)...")
+    print(f"{'~' * 50}\n")
+
+    try:
+        from indian_tts.podcast_demo import generate_podcast_for_stage
+        podcast_path = generate_podcast_for_stage(
+            stage_num=stage_num,
+            checkpoint_path=str(ckpts[-1]) if ckpts else "",
+            output_base_dir=config["paths"]["output_dir"],
+            device=str(device),
+        )
+        print(f"\n  Podcast saved: {podcast_path}")
+        print(f"  Compare this with podcasts from other stages to hear improvement!\n")
+    except Exception as e:
+        print(f"  Podcast generation failed (non-fatal): {e}")
+        print(f"  Continuing with validation checks...\n")
+        podcast_path = None
+
     # ---- Stage-specific checks ----
 
     if stage_num == 0:
