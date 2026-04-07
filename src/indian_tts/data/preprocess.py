@@ -139,10 +139,17 @@ def download_svarah(
         err1 = str(e1)
         print(f"      Standard load failed: {err1[:150]}")
 
-        # Try 2: With explicit token
+        # Try 2: With explicit token from environment or HfApi
         try:
-            from huggingface_hub import HfFolder
-            token = HfFolder.get_token()
+            token = None
+            try:
+                from huggingface_hub import HfApi
+                token = HfApi().token
+            except Exception:
+                pass
+            if not token:
+                token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+
             if token:
                 print("      Retrying with explicit token...")
                 ds = load_dataset("ai4bharat/Svarah", split="test", token=token)
@@ -375,15 +382,28 @@ def download_common_voice(
 
     # Detect which dataset we loaded to adjust filtering
     test_sample = next(iter(ds))
-    is_fleurs = "transcription" in test_sample  # FLEURS uses 'transcription', CV uses 'sentence'
-    has_accent = "accent" in test_sample
+    is_fleurs = "transcription" in test_sample
+    # Check both 'accent' and 'accents' field names
+    accent_field = None
+    if "accent" in test_sample:
+        accent_field = "accent"
+    elif "accents" in test_sample:
+        accent_field = "accents"
+    has_accent = accent_field is not None
+
+    # Check if audio is embedded or just a path
+    has_audio_column = "audio" in test_sample
+    has_path_only = "path" in test_sample and not has_audio_column
+
     print(f"      Dataset type: {'FLEURS' if is_fleurs else 'Common Voice'}")
     print(f"      Fields: {list(test_sample.keys())[:10]}")
+    print(f"      Accent field: {accent_field or 'none'}")
+    print(f"      Audio: {'embedded' if has_audio_column else 'path only' if has_path_only else 'unknown'}")
 
-    # Reload the iterator (we consumed one sample)
-    ds = load_dataset(**{k: v for k, v in [
-        ("path", ds.builder_name if hasattr(ds, 'builder_name') else None),
-    ] if v}) if False else ds  # Can't easily reset streaming, just accept losing 1 sample
+    if has_path_only:
+        print("      WARNING: Dataset has file paths but no embedded audio.")
+        print("      This mirror may not include audio files. Skipping.")
+        return []
 
     entries = []
     male_seconds = 0.0
@@ -398,8 +418,8 @@ def download_common_voice(
             break
 
         # Filter: Indian accent (skip for FLEURS which is already Indian English)
-        if has_accent:
-            accent = (sample.get("accent") or "").lower().strip()
+        if has_accent and accent_field:
+            accent = (sample.get(accent_field) or "").lower().strip()
             if "india" not in accent:
                 continue
 
