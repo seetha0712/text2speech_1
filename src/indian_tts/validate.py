@@ -323,9 +323,13 @@ def run_stage(stage_num: int, config: dict, resume_from: Optional[str] = None) -
 
     try:
         from indian_tts.podcast_demo import generate_podcast_for_stage
+        from pathlib import Path
+        checkpoint_files = sorted(Path(config["paths"]["checkpoint_dir"]).glob("checkpoint_*.pt"))
+        if not checkpoint_files:
+            raise FileNotFoundError("No checkpoints found for podcast generation")
         podcast_path = generate_podcast_for_stage(
             stage_num=stage_num,
-            checkpoint_path=str(ckpts[-1]) if ckpts else "",
+            checkpoint_path=str(checkpoint_files[-1]),
             output_base_dir=config["paths"]["output_dir"],
             device=str(device),
         )
