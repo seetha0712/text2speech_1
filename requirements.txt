@@ -1,0 +1,45 @@
+# Core ML
+torch>=2.1.0
+torchaudio>=2.1.0
+numpy>=1.24.0,<2.0.0
+
+# Audio Processing
+librosa>=0.10.0
+soundfile>=0.12.0
+scipy>=1.11.0
+pyloudnorm>=0.1.1
+pydub>=0.25.1
+webrtcvad>=2.0.10
+
+# Text Processing
+phonemizer>=3.2.0
+g2p-en>=2.1.0
+indic-transliteration>=2.3.0
+epitran>=1.24.0
+num2words>=0.5.13
+regex>=2023.0
+
+# Model & Training
+einops>=0.7.0
+monotonic-align>=1.0
+tensorboard>=2.14.0
+accelerate>=0.24.0
+
+# Inference & Export
+onnxruntime>=1.16.0
+gradio>=4.0.0
+
+# Data
+datasets>=2.14.0
+huggingface-hub>=0.17.0
+tqdm>=4.66.0
+pandas>=2.1.0
+
+# Evaluation
+pesq>=0.0.4
+pystoi>=0.3.3
+
+# Utilities
+PyYAML>=6.0
+omegaconf>=2.3.0
+matplotlib>=3.8.0

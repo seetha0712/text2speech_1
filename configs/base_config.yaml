@@ -1,0 +1,134 @@
+# =============================================================================
+# Indian TTS - VITS2 Base Configuration
+# =============================================================================
+
+# --- Model Architecture ---
+model:
+  # Text Encoder
+  text_encoder:
+    n_vocab: 256          # Phoneme vocabulary size (extended for Indian phonemes)
+    hidden_channels: 192
+    filter_channels: 768
+    n_heads: 2
+    n_layers: 6
+    kernel_size: 3
+    dropout: 0.1
+
+  # Posterior Encoder
+  posterior_encoder:
+    in_channels: 513       # n_fft // 2 + 1
+    hidden_channels: 192
+    out_channels: 192
+    kernel_size: 5
+    dilation_rate: 1
+    n_layers: 16
+
+  # Flow (Normalizing Flow for latent distribution)
+  flow:
+    hidden_channels: 192
+    kernel_size: 5
+    dilation_rate: 1
+    n_layers: 4
+    n_flows: 4
+
+  # Decoder (HiFi-GAN based)
+  decoder:
+    in_channels: 192
+    upsample_initial_channel: 512
+    upsample_rates: [8, 8, 2, 2]
+    upsample_kernel_sizes: [16, 16, 4, 4]
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
+  # Stochastic Duration Predictor
+  duration_predictor:
+    hidden_channels: 192
+    kernel_size: 3
+    dropout: 0.5
+    n_flows: 4
+    filter_channels: 256
+
+  # Multi-Speaker
+  n_speakers: 2           # Male and Female
+  speaker_embed_dim: 256  # Speaker embedding dimension
+
+  # Discriminator (Multi-Period Discriminator)
+  discriminator:
+    periods: [2, 3, 5, 7, 11]
+    use_spectral_norm: false
+
+# --- Audio Processing ---
+audio:
+  sampling_rate: 22050
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  n_mels: 80
+  mel_fmin: 0.0
+  mel_fmax: null          # Nyquist / 2
+  max_wav_value: 32768.0
+  segment_size: 8192      # ~0.37 seconds at 22050Hz
+
+# --- Training ---
+training:
+  # Optimizer
+  learning_rate: 0.0002
+  betas: [0.8, 0.99]
+  eps: 1.0e-9
+  weight_decay: 0.01
+
+  # Scheduler
+  lr_decay: 0.999875
+
+  # Training params
+  batch_size: 32
+  accumulate_grad_batches: 1
+  max_steps: 800000
+  warmup_steps: 5000
+  seed: 42
+
+  # Loss weights
+  loss_weights:
+    mel: 45.0
+    kl: 1.0
+    duration: 1.0
+    generator: 1.0
+    discriminator: 1.0
+    feature_matching: 2.0
+
+  # Checkpointing
+  save_every_n_steps: 10000
+  eval_every_n_steps: 5000
+  keep_last_n_checkpoints: 5
+  log_every_n_steps: 100
+
+  # Mixed precision
+  fp16: true
+
+  # Gradient clipping
+  grad_clip_norm: 1.0
+
+# --- Data ---
+data:
+  training_files: "data/train.txt"
+  validation_files: "data/val.txt"
+  text_cleaners: ["indian_english_cleaners"]
+  max_text_length: 300
+  max_audio_length: 220500  # 10 seconds at 22050Hz
+  min_audio_length: 11025   # 0.5 seconds
+  num_workers: 4
+  pin_memory: true
+
+# --- Inference ---
+inference:
+  noise_scale: 0.667       # Controls expressiveness
+  noise_scale_w: 0.8       # Controls phoneme duration variation
+  length_scale: 1.0        # Controls speaking speed (1.0 = normal)
+  max_inference_length: 2000
+
+# --- Paths ---
+paths:
+  output_dir: "outputs"
+  checkpoint_dir: "outputs/checkpoints"
+  log_dir: "outputs/logs"
+  data_dir: "data"

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data (training data, not source code)
+data/*.wav
+data/*.txt
+data/indic_tts/
+data/common_voice/
+data/sample/
+data/processed/
+
+# Outputs
+outputs/
+*.wav
+*.mp3
+*.onnx
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Tensorboard
+runs/
+events.out.*
