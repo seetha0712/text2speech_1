@@ -12,6 +12,7 @@ Combines:
 For multi-speaker Indian TTS with male/female voice support.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -240,7 +241,7 @@ class VITS2(nn.Module):
         with torch.no_grad():
             # Compute alignment cost
             s_p_sq_r = torch.exp(-2 * logs_p)  # (B, C, T_text)
-            neg_cent1 = torch.sum(-0.5 * torch.log(2 * torch.pi) - logs_p, dim=1, keepdim=True)
+            neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, dim=1, keepdim=True)
             neg_cent2 = torch.matmul(-0.5 * s_p_sq_r.transpose(1, 2), z_p ** 2)
             neg_cent3 = torch.matmul(s_p_sq_r.transpose(1, 2) * m_p.transpose(1, 2), z_p)
             neg_cent4 = torch.sum(-0.5 * m_p ** 2 * s_p_sq_r, dim=1, keepdim=True)
