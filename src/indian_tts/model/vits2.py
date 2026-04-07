@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 from indian_tts.model.encoders import TextEncoder, PosteriorEncoder
 from indian_tts.model.decoder import HiFiGANGenerator
-from indian_tts.model.duration_predictor import StochasticDurationPredictor
+from indian_tts.model.duration_predictor import DurationPredictor
 from indian_tts.model.modules import ResidualCouplingBlock
 from indian_tts.model.monotonic_align import maximum_path
 
@@ -193,7 +193,7 @@ class VITS2(nn.Module):
         )
 
         # Stochastic Duration Predictor
-        self.duration_predictor = StochasticDurationPredictor(
+        self.duration_predictor = DurationPredictor(
             in_channels=config.text_enc_hidden,
             hidden_channels=config.dp_hidden,
             kernel_size=config.dp_kernel,
