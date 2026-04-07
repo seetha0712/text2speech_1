@@ -239,27 +239,29 @@ class VITS2(nn.Module):
 
         # Monotonic Alignment Search
         with torch.no_grad():
-            # Compute alignment cost
+            # Compute alignment cost: log p(z_p | text) for each (text_pos, spec_pos) pair
+            # shapes: m_p, logs_p: (B, C, T_text), z_p: (B, C, T_spec)
             s_p_sq_r = torch.exp(-2 * logs_p)  # (B, C, T_text)
+
+            # neg_cent1: -0.5 * C * log(2pi) - sum(logs_p) per text position -> (B, 1, T_text)
             neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, dim=1, keepdim=True)
+
+            # neg_cent2: -0.5 * sum(s_p_sq_r * z_p^2) -> (B, T_text, T_spec)
             neg_cent2 = torch.matmul(-0.5 * s_p_sq_r.transpose(1, 2), z_p ** 2)
-            neg_cent3 = torch.matmul(s_p_sq_r.transpose(1, 2) * m_p.transpose(1, 2), z_p)
+
+            # neg_cent3: sum(s_p_sq_r * m_p * z_p) -> (B, T_text, T_spec)
+            neg_cent3 = torch.matmul((s_p_sq_r * m_p).transpose(1, 2), z_p)
+
+            # neg_cent4: -0.5 * sum(m_p^2 * s_p_sq_r) per text position -> (B, 1, T_text)
             neg_cent4 = torch.sum(-0.5 * m_p ** 2 * s_p_sq_r, dim=1, keepdim=True)
-            neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4  # (B, 1, T_text) + ...
 
-            # Reshape for alignment
-            neg_cent = neg_cent.squeeze(1) if neg_cent.dim() == 4 else neg_cent
-            if neg_cent.dim() == 3:
-                neg_cent = neg_cent.transpose(1, 2)  # (B, T_text, T_spec)
-            else:
-                neg_cent = neg_cent.squeeze(1)
+            # neg_cent1 and neg_cent4 are (B, 1, T_text) -> transpose to (B, T_text, 1) for broadcasting
+            # neg_cent2 and neg_cent3 are (B, T_text, T_spec)
+            neg_cent = neg_cent1.transpose(1, 2) + neg_cent2 + neg_cent3 + neg_cent4.transpose(1, 2)
+            # Result: (B, T_text, T_spec)
 
-            # Ensure correct shape
-            if neg_cent.dim() == 2:
-                neg_cent = neg_cent.unsqueeze(0)
-
-            # Alignment mask
-            attn_mask = x_mask.transpose(1, 2) * y_mask  # (B, T_text, T_spec)
+            # Alignment mask: (B, T_text, T_spec)
+            attn_mask = x_mask.transpose(1, 2) * y_mask  # (B, T_text, 1) * (B, 1, T_spec)
 
             attn = maximum_path(neg_cent, attn_mask)
 
