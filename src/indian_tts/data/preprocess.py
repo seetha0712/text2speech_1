@@ -117,21 +117,50 @@ def download_svarah(
     os.makedirs(male_dir, exist_ok=True)
     os.makedirs(female_dir, exist_ok=True)
 
-    # Load the dataset
+    # Check HuggingFace login
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        user = api.whoami()
+        print(f"      HuggingFace user: {user.get('name', 'unknown')}")
+    except Exception:
+        print("      WARNING: Not logged into HuggingFace.")
+        print("      Run: from huggingface_hub import notebook_login; notebook_login()")
+        print("      Then re-run this cell.")
+
+    # Load the dataset — try multiple approaches
     print("      Loading dataset...")
+    ds = None
+
+    # Try 1: Standard load
     try:
         ds = load_dataset("ai4bharat/Svarah", split="test")
-    except Exception as e:
-        err_msg = str(e)
-        print(f"      ERROR: Failed to load Svarah: {err_msg[:200]}")
-        if "gated" in err_msg.lower() or "access" in err_msg.lower():
-            print("\n      This is a GATED dataset. To get access:")
-            print("      1. Go to: https://huggingface.co/datasets/ai4bharat/Svarah")
-            print("      2. Click 'Agree and access repository'")
-            print("      3. In Colab, run: from huggingface_hub import notebook_login; notebook_login()")
-            print("      4. Re-run this cell")
-        else:
-            print("      Try: pip install --upgrade datasets")
+    except Exception as e1:
+        err1 = str(e1)
+        print(f"      Standard load failed: {err1[:150]}")
+
+        # Try 2: With explicit token
+        try:
+            from huggingface_hub import HfFolder
+            token = HfFolder.get_token()
+            if token:
+                print("      Retrying with explicit token...")
+                ds = load_dataset("ai4bharat/Svarah", split="test", token=token)
+            else:
+                print("      No HF token found.")
+        except Exception as e2:
+            print(f"      Token retry failed: {str(e2)[:150]}")
+
+    if ds is None:
+        print("\n      ERROR: Could not load Svarah.")
+        print("      Steps to fix:")
+        print("      1. Go to: https://huggingface.co/datasets/ai4bharat/Svarah")
+        print("      2. Click 'Agree and access repository' (if gated)")
+        print("      3. Get a token: https://huggingface.co/settings/tokens")
+        print("      4. In Colab run:")
+        print("           from huggingface_hub import notebook_login")
+        print("           notebook_login()")
+        print("      5. Re-run this cell")
         return []
 
     print(f"      Loaded {len(ds)} samples")
@@ -299,26 +328,62 @@ def download_common_voice(
             print(f"      Direct parquet failed: {type(e).__name__}: {str(e)[:120]}")
             ds = None
 
-    # Approach 3: Try an older pinned datasets version approach
+    # Approach 3: malaysia-ai mirror (default config, then filter by locale)
+    if ds is None:
+        for config_name in ["default", "pseudospeaker"]:
+            try:
+                print(f"      Trying malaysia-ai/common_voice_22_0 ({config_name})...")
+                ds = load_dataset(
+                    "malaysia-ai/common_voice_22_0",
+                    config_name,
+                    split="train",
+                    streaming=True,
+                )
+                sample = next(iter(ds))
+                # Check if this has locale/language field to filter English
+                if "locale" in sample or "language" in sample or "sentence" in sample:
+                    print(f"      Loaded from malaysia-ai ({config_name})!")
+                    print(f"      Sample fields: {list(sample.keys())}")
+                    break
+                else:
+                    ds = None
+            except Exception as e:
+                print(f"      {config_name} failed: {type(e).__name__}: {str(e)[:120]}")
+                ds = None
+
+    # Approach 4: Try other English speech datasets with Indian speakers
     if ds is None:
         try:
-            print("      Trying malaysia-ai/common_voice_22_0 mirror...")
+            print("      Trying google/fleurs en_in (Parquet)...")
             ds = load_dataset(
-                "malaysia-ai/common_voice_22_0",
-                "en",
+                "google/fleurs",
+                "en_in",
                 split="train",
+                revision="refs/convert/parquet",
                 streaming=True,
             )
             _ = next(iter(ds))
-            print("      Loaded from malaysia-ai mirror!")
+            print("      Loaded FLEURS en_in from parquet branch!")
         except Exception as e:
-            print(f"      Malaysia-ai mirror failed: {type(e).__name__}: {str(e)[:120]}")
+            print(f"      FLEURS parquet failed: {type(e).__name__}: {str(e)[:120]}")
             ds = None
 
     if ds is None:
         print("      WARNING: Could not load Common Voice from any source.")
         print("      Continuing with Svarah data only.")
         return []
+
+    # Detect which dataset we loaded to adjust filtering
+    test_sample = next(iter(ds))
+    is_fleurs = "transcription" in test_sample  # FLEURS uses 'transcription', CV uses 'sentence'
+    has_accent = "accent" in test_sample
+    print(f"      Dataset type: {'FLEURS' if is_fleurs else 'Common Voice'}")
+    print(f"      Fields: {list(test_sample.keys())[:10]}")
+
+    # Reload the iterator (we consumed one sample)
+    ds = load_dataset(**{k: v for k, v in [
+        ("path", ds.builder_name if hasattr(ds, 'builder_name') else None),
+    ] if v}) if False else ds  # Can't easily reset streaming, just accept losing 1 sample
 
     entries = []
     male_seconds = 0.0
@@ -332,18 +397,27 @@ def download_common_voice(
         if male_seconds >= max_seconds and female_seconds >= max_seconds:
             break
 
-        # Filter: Indian accent
-        accent = (sample.get("accent") or "").lower().strip()
-        if "india" not in accent:
-            continue
+        # Filter: Indian accent (skip for FLEURS which is already Indian English)
+        if has_accent:
+            accent = (sample.get("accent") or "").lower().strip()
+            if "india" not in accent:
+                continue
 
-        # Filter: Gender
-        gender = (sample.get("gender") or "").lower().strip()
-        if gender in ("male_masculine", "male"):
-            gender = "male"
-        elif gender in ("female_feminine", "female"):
-            gender = "female"
+        # Filter: Gender (handle both CV and FLEURS formats)
+        gender_raw = sample.get("gender", "")
+        if isinstance(gender_raw, int):
+            # FLEURS format: 0=male, 1=female
+            gender = "male" if gender_raw == 0 else "female" if gender_raw == 1 else ""
         else:
+            gender = (gender_raw or "").lower().strip()
+            if gender in ("male_masculine", "male"):
+                gender = "male"
+            elif gender in ("female_feminine", "female"):
+                gender = "female"
+            else:
+                continue
+
+        if gender not in ("male", "female"):
             continue
 
         # Skip if this gender has enough
@@ -352,7 +426,7 @@ def download_common_voice(
         if gender == "female" and female_seconds >= max_seconds:
             continue
 
-        # Filter: Quality
+        # Filter: Quality (only for CV which has upvotes)
         up_votes = sample.get("up_votes", 0) or 0
         down_votes = sample.get("down_votes", 0) or 0
         if up_votes < min_upvotes or down_votes > up_votes:
@@ -371,7 +445,8 @@ def download_common_voice(
             continue
 
         # Text
-        text = (sample.get("sentence") or "").strip()
+        # Text field varies by dataset
+        text = (sample.get("sentence") or sample.get("transcription") or sample.get("text") or "").strip()
         if len(text) < 3:
             continue
 
