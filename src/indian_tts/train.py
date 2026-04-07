@@ -266,12 +266,12 @@ class Trainer:
             y = slice_segments(batch["audio"], ids_slice, segment_size)
             y = y.unsqueeze(1)  # (B, 1, T)
 
-        # Discriminator forward (outside autocast for stability)
+        # Discriminator forward
         y_hat_detach = y_hat.detach()
-        real_scores, fake_scores, real_fmaps, fake_fmaps = self.discriminator(y, y_hat_detach)
-
-        loss_d_real, loss_d_fake = discriminator_loss(real_scores, fake_scores)
-        loss_d = loss_d_real + loss_d_fake
+        with torch.amp.autocast("cuda", enabled=self.fp16):
+            real_scores, fake_scores, real_fmaps, fake_fmaps = self.discriminator(y, y_hat_detach)
+            loss_d_real, loss_d_fake = discriminator_loss(real_scores, fake_scores)
+            loss_d = loss_d_real + loss_d_fake
 
         self.scaler.scale(loss_d).backward()
         self.scaler.unscale_(self.optim_d)
