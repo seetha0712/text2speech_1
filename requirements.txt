@@ -21,7 +21,6 @@ regex>=2023.0
 
 # Model & Training
 einops>=0.7.0
-monotonic-align>=1.0
 tensorboard>=2.14.0
 accelerate>=0.24.0
 
