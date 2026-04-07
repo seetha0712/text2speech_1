@@ -1,56 +1,70 @@
-# Indian TTS — Custom Text-to-Speech Model
+# Indian TTS — Custom Indian English Text-to-Speech (Male & Female)
 
-A custom VITS2-based Text-to-Speech system producing natural **Indian-sounding male and female voices**, built from scratch.
+A VITS2-based Text-to-Speech system trained from scratch to produce **Indian English accented male and female voices**.
 
-## Architecture
+## Quickest Way to Start
 
-**VITS2** (Variational Inference with adversarial learning for end-to-end TTS, v2):
-- Transformer-based text encoder with Indian English phoneme support
-- WaveNet posterior encoder
-- Normalizing flow for latent space mapping
-- HiFi-GAN decoder for high-fidelity waveform generation
-- Stochastic duration predictor for natural speech rhythm
-- Multi-speaker conditioning (male/female)
+**Open the Colab notebook** (requires Colab Pro+ with A100 GPU):
 
-## Quick Start
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](notebooks/train_indian_tts_colab.ipynb)
+
+The notebook handles everything: data download, preprocessing, training, and inference.
+
+## How It Works
+
+1. **Downloads Indian English speech data** automatically (legally safe, no manual steps)
+2. **Trains a VITS2 model** from scratch on the data
+3. **Generates speech** with selectable male/female Indian English voices
+
+### Training Data (Auto-Downloaded)
+
+Only legally safe datasets with permissive licenses are used:
+
+| Dataset | License | Commercial Use | What It Provides |
+|---------|---------|---------------|-----------------|
+| **Mozilla Common Voice** | **CC-0** (public domain) | Unrestricted | ~100-300 hrs Indian English, male & female |
+| **Google FLEURS** (en_in) | **CC-BY 4.0** | Yes (with attribution) | ~10-15 hrs Indian English, male & female |
+
+No research-only or non-commercial datasets are used. See `ATTRIBUTION.md` after download.
+
+## Local Setup (non-Colab)
 
 ### 1. Install
 
 ```bash
 pip install -r requirements.txt
 pip install -e .
-
-# Required: eSpeak-ng for phonemization
-# Ubuntu/Debian:
-sudo apt-get install espeak-ng
-# macOS:
-brew install espeak-ng
+sudo apt-get install espeak-ng   # Required for phonemization
 ```
 
-### 2. Prepare Data
+### 2. Download Data
 
 ```bash
-# Generate sample data to test the pipeline
+# Download all safe datasets (Common Voice + FLEURS)
+python -m indian_tts.data.preprocess --source all --output data/ --max-hours 15
+
+# Or just Common Voice (largest source)
+python -m indian_tts.data.preprocess --source common_voice --output data/ --max-hours 20
+
+# Or generate sample data to test the pipeline first
 python -m indian_tts.data.preprocess --source sample --output data/
-
-# Use real data (IndicTTS from IIT Madras)
-python -m indian_tts.data.preprocess --source indic_tts --indic-tts-dir /path/to/indic_tts --output data/
-
-# Use Common Voice (auto-download Indian English subset)
-python -m indian_tts.data.preprocess --source common_voice --max-hours 20 --output data/
 ```
+
+Note: Common Voice requires accepting terms on HuggingFace first:
+https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
 
 ### 3. Train
 
 ```bash
-# Train with default config
-python -m indian_tts.train --config configs/base_config.yaml
+# Train on A100 (use colab config for optimized settings)
+python -m indian_tts.train --config configs/colab_a100_config.yaml
 
 # Resume from checkpoint
-python -m indian_tts.train --config configs/base_config.yaml --resume outputs/checkpoints/checkpoint_step_100000.pt
+python -m indian_tts.train --config configs/colab_a100_config.yaml \
+    --resume outputs/checkpoints/checkpoint_step_50000.pt
 ```
 
-### 4. Inference
+### 4. Generate Speech
 
 ```bash
 # CLI
@@ -59,13 +73,15 @@ python -m indian_tts.inference \
     --text "Hello, welcome to our text to speech system." \
     --voice female \
     --output output.wav
+```
 
+```python
 # Python API
 from indian_tts.inference import IndianTTS
 
 tts = IndianTTS("outputs/checkpoints/checkpoint_final.pt")
-audio = tts.synthesize("Namaste, how are you?", voice="female")
 tts.synthesize("Good morning!", voice="male", output_path="greeting.wav")
+tts.synthesize("How are you?", voice="female", output_path="greeting_f.wav")
 ```
 
 ### 5. Web Demo
@@ -87,57 +103,51 @@ python -m indian_tts.evaluate \
 
 | Parameter | Range | Description |
 |-----------|-------|-------------|
-| `voice` | "male" / "female" | Select Indian voice |
+| `voice` | `"male"` / `"female"` | Select Indian English voice |
 | `speed` | 0.5 — 2.0 | Speaking speed (1.0 = normal) |
 | `expressiveness` | 0.0 — 1.0 | Prosodic variation (0.667 = default) |
 | `duration_variation` | 0.0 — 1.0 | Timing naturalness (0.8 = default) |
 
-## Data Sources
+## Architecture
 
-| Dataset | Description | Access |
-|---------|-------------|--------|
-| **IndicTTS** (IIT Madras) | Studio-quality Indian English M/F | [Register](https://www.iitm.ac.in/donlab/tts/database.php) |
-| **Common Voice** | Crowdsourced Indian English | [Download](https://commonvoice.mozilla.org/) |
-| **IndicVoices** | 22 Indian languages, 7000+ hrs | [HuggingFace](https://huggingface.co/datasets/ai4bharat/IndicVoices) |
+**VITS2** — end-to-end text-to-waveform:
+- Transformer text encoder with Indian English phoneme support (retroflex consonants, aspirated stops)
+- WaveNet posterior encoder
+- Normalizing flow for latent space mapping
+- HiFi-GAN decoder for waveform generation
+- Stochastic duration predictor for natural rhythm
+- Multi-speaker conditioning (male = speaker 0, female = speaker 1)
+
+## Training Time (Colab Pro+ A100)
+
+| Steps | Time | Quality |
+|-------|------|---------|
+| 50K | ~6-8 hours | Early results, some artifacts |
+| 100K | ~12-16 hours | Decent quality |
+| 200K | ~24-32 hours | Good quality |
 
 ## Project Structure
 
 ```
+├── notebooks/
+│   └── train_indian_tts_colab.ipynb   # One-click Colab notebook
 ├── configs/
-│   └── base_config.yaml        # Model & training configuration
+│   ├── base_config.yaml               # Base configuration
+│   └── colab_a100_config.yaml         # A100-optimized config
 ├── src/indian_tts/
-│   ├── text/
-│   │   ├── symbols.py          # Indian English phoneme set
-│   │   └── processing.py       # G2P and text normalization
-│   ├── data/
-│   │   ├── audio.py            # Audio feature extraction
-│   │   ├── dataset.py          # PyTorch dataset & collator
-│   │   └── preprocess.py       # Data download & preparation
-│   ├── model/
-│   │   ├── vits2.py            # Main VITS2 model
-│   │   ├── encoders.py         # Text & posterior encoders
-│   │   ├── decoder.py          # HiFi-GAN decoder
-│   │   ├── modules.py          # Core building blocks
-│   │   ├── duration_predictor.py
-│   │   ├── discriminator.py    # Multi-period discriminator
-│   │   └── monotonic_align.py  # MAS alignment
-│   ├── losses.py               # Training losses
-│   ├── train.py                # Training pipeline
-│   ├── inference.py            # Inference API
-│   └── evaluate.py             # Evaluation & benchmarks
-├── app.py                      # Gradio web demo
+│   ├── text/                          # Phoneme symbols & G2P
+│   ├── data/                          # Data download, processing, dataset
+│   ├── model/                         # VITS2 architecture
+│   ├── losses.py                      # Training losses
+│   ├── train.py                       # Training pipeline
+│   ├── inference.py                   # Inference API
+│   └── evaluate.py                    # Evaluation & benchmarks
+├── app.py                             # Gradio web demo
 ├── requirements.txt
-└── FEASIBILITY_ANALYSIS.md     # Detailed feasibility study
+├── FEASIBILITY_ANALYSIS.md            # Detailed feasibility study
+└── ATTRIBUTION.md                     # Data license attribution (auto-generated)
 ```
-
-## Hardware Requirements
-
-| Tier | GPU | Training Time | Expected MOS |
-|------|-----|---------------|-------------|
-| MVP | 1x RTX 4090 / A100 | 3-5 days | 3.2-3.5 |
-| Production | 4x A100 | 1-2 weeks | 3.7-4.0 |
-| SOTA | 8x H100 | 2-4 weeks | 4.0-4.2 |
 
 ## License
 
-Research use. See individual dataset licenses for data restrictions.
+Code: MIT. Training data licenses: CC-0 (Common Voice) and CC-BY 4.0 (FLEURS).

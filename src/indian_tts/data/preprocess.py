@@ -1,274 +1,357 @@
 """
 Data preprocessing pipeline for Indian TTS.
 
-Downloads, processes, and prepares training data from:
-1. IndicTTS dataset (IIT Madras)
-2. Common Voice (Indian English subset)
-3. Custom recordings
+Downloads and prepares ONLY legally safe datasets:
+1. Mozilla Common Voice — Indian English subset (CC-0, public domain)
+2. Google FLEURS — Indian English (CC-BY 4.0)
+
+NO research-only or non-commercial datasets are used.
 
 Usage:
-    python -m indian_tts.data.preprocess --config configs/base_config.yaml --output data/
+    # Download all safe datasets and prepare for training
+    python -m indian_tts.data.preprocess --output data/
+
+    # Download only Common Voice (largest source)
+    python -m indian_tts.data.preprocess --source common_voice --output data/
+
+    # Limit hours to save disk space
+    python -m indian_tts.data.preprocess --source common_voice --max-hours 10 --output data/
 """
 
 import argparse
-import csv
 import json
 import os
 import random
-import shutil
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-import soundfile as sf
 import numpy as np
+import soundfile as sf
 
 
-def download_indic_tts(output_dir: str, languages: List[str] = None) -> str:
+# ===========================================================================
+# License Information
+# ===========================================================================
+DATASET_LICENSES = {
+    "common_voice": {
+        "name": "Mozilla Common Voice (English — Indian accent subset)",
+        "license": "CC-0 1.0 Universal (Public Domain Dedication)",
+        "url": "https://commonvoice.mozilla.org/en/datasets",
+        "commercial_use": True,
+        "attribution_required": False,
+        "notes": "Speakers voluntarily donated voice recordings to the public domain.",
+    },
+    "fleurs": {
+        "name": "Google FLEURS (en_in — Indian English)",
+        "license": "CC-BY 4.0 International",
+        "url": "https://huggingface.co/datasets/google/fleurs",
+        "commercial_use": True,
+        "attribution_required": True,
+        "notes": "Attribution: Google FLEURS dataset, CC-BY 4.0.",
+    },
+}
+
+
+def print_license_info():
+    """Print license information for all datasets used."""
+    print("\n" + "=" * 70)
+    print("DATASET LICENSE INFORMATION")
+    print("=" * 70)
+    for key, info in DATASET_LICENSES.items():
+        print(f"\n  [{key}]")
+        print(f"  Name:       {info['name']}")
+        print(f"  License:    {info['license']}")
+        print(f"  Commercial: {'YES' if info['commercial_use'] else 'NO'}")
+        print(f"  Attribution: {'Required' if info['attribution_required'] else 'Not required'}")
+        print(f"  URL:        {info['url']}")
+    print("\n" + "=" * 70 + "\n")
+
+
+# ===========================================================================
+# Common Voice Downloader (CC-0 — Public Domain)
+# ===========================================================================
+
+def download_common_voice(
+    output_dir: str,
+    max_hours: float = 20.0,
+    target_sr: int = 22050,
+    min_duration: float = 1.0,
+    max_duration: float = 15.0,
+    min_upvotes: int = 2,
+) -> List[Dict]:
     """
-    Download IndicTTS dataset from IIT Madras.
+    Download Mozilla Common Voice — Indian English accent subset.
 
-    The IndicTTS dataset contains high-quality recordings of
-    Indian English speakers (male and female).
+    License: CC-0 1.0 (Public Domain). Free for any use including commercial.
 
-    Note: This requires manual download from:
-    https://www.iitm.ac.in/donlab/tts/database.php
-
-    This function sets up the expected directory structure.
-    """
-    if languages is None:
-        languages = ["english"]
-
-    dataset_dir = os.path.join(output_dir, "indic_tts")
-    os.makedirs(dataset_dir, exist_ok=True)
-
-    readme = f"""# IndicTTS Dataset Setup
-
-## Manual Download Required
-
-The IndicTTS dataset requires registration. Please:
-
-1. Visit: https://www.iitm.ac.in/donlab/tts/database.php
-2. Register and download the Indian English dataset
-3. Extract the files to: {dataset_dir}
-
-Expected structure:
-    {dataset_dir}/
-    ├── english/
-    │   ├── male/
-    │   │   ├── wav/
-    │   │   │   ├── eng_m_0001.wav
-    │   │   │   ├── eng_m_0002.wav
-    │   │   │   └── ...
-    │   │   └── txt/
-    │   │       ├── eng_m_0001.txt
-    │   │       └── ...
-    │   └── female/
-    │       ├── wav/
-    │       └── txt/
-
-## Alternative: Common Voice
-
-You can also use Mozilla Common Voice (Indian English):
-    python -m indian_tts.data.preprocess --source common_voice --output data/
-"""
-    readme_path = os.path.join(dataset_dir, "README.md")
-    with open(readme_path, "w") as f:
-        f.write(readme)
-
-    # Create expected directory structure
-    for lang in languages:
-        for gender in ["male", "female"]:
-            os.makedirs(os.path.join(dataset_dir, lang, gender, "wav"), exist_ok=True)
-            os.makedirs(os.path.join(dataset_dir, lang, gender, "txt"), exist_ok=True)
-
-    return dataset_dir
-
-
-def download_common_voice(output_dir: str, max_hours: float = 20.0) -> str:
-    """
-    Download Common Voice Indian English subset using HuggingFace datasets.
+    Filters for:
+    - Indian accent (self-reported by speakers)
+    - Male and female speakers (using gender metadata)
+    - Validated clips with upvotes (quality filter)
+    - Duration between 1-15 seconds
 
     Args:
-        output_dir: Where to save processed data
-        max_hours: Maximum hours of data to download
+        output_dir: Where to save processed audio files
+        max_hours: Maximum hours of data to download per gender
+        target_sr: Target sampling rate for saved files
+        min_duration: Minimum clip duration in seconds
+        max_duration: Maximum clip duration in seconds
+        min_upvotes: Minimum upvotes for quality filtering
 
     Returns:
-        Path to downloaded data directory
+        List of manifest entries [{audio_path, speaker_id, text, duration}]
     """
-    dataset_dir = os.path.join(output_dir, "common_voice")
-    os.makedirs(dataset_dir, exist_ok=True)
-
     try:
         from datasets import load_dataset
-
-        print("Downloading Common Voice Indian English subset...")
-        ds = load_dataset(
-            "mozilla-foundation/common_voice_16_1",
-            "en",
-            split="train",
-            streaming=True,
-            trust_remote_code=True,
-        )
-
-        male_dir = os.path.join(dataset_dir, "male", "wav")
-        female_dir = os.path.join(dataset_dir, "female", "wav")
-        os.makedirs(male_dir, exist_ok=True)
-        os.makedirs(female_dir, exist_ok=True)
-
-        manifest = []
-        total_duration = 0.0
-        max_seconds = max_hours * 3600
-
-        for i, sample in enumerate(ds):
-            if total_duration >= max_seconds:
-                break
-
-            # Filter for Indian English accents
-            accent = sample.get("accent", "")
-            if accent and "india" not in accent.lower():
-                continue
-
-            audio = sample["audio"]
-            sr = audio["sampling_rate"]
-            array = np.array(audio["array"], dtype=np.float32)
-            duration = len(array) / sr
-
-            # Skip very short or very long
-            if duration < 1.0 or duration > 15.0:
-                continue
-
-            # Determine gender (if available)
-            gender = sample.get("gender", "")
-            if gender == "male":
-                speaker_id = 0
-                wav_dir = male_dir
-            elif gender == "female":
-                speaker_id = 1
-                wav_dir = female_dir
-            else:
-                # Assign alternating if unknown
-                speaker_id = i % 2
-                wav_dir = male_dir if speaker_id == 0 else female_dir
-
-            # Save audio
-            filename = f"cv_{i:06d}.wav"
-            filepath = os.path.join(wav_dir, filename)
-            sf.write(filepath, array, sr)
-
-            manifest.append({
-                "audio_path": filepath,
-                "speaker_id": speaker_id,
-                "text": sample["sentence"],
-                "duration": duration,
-            })
-
-            total_duration += duration
-
-            if i % 100 == 0:
-                print(f"  Processed {i} samples, {total_duration/3600:.2f} hours...")
-
-        print(f"Downloaded {len(manifest)} samples, {total_duration/3600:.2f} hours total")
-
-        # Save manifest
-        manifest_path = os.path.join(dataset_dir, "manifest.json")
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
-
-        return dataset_dir
-
+        import torchaudio
     except ImportError:
-        print("WARNING: 'datasets' package not installed. Cannot download Common Voice.")
-        print("Install with: pip install datasets")
+        print("ERROR: Required packages not installed.")
+        print("Run: pip install datasets torchaudio")
+        return []
 
-        # Create placeholder
-        placeholder = os.path.join(dataset_dir, "DOWNLOAD_INSTRUCTIONS.md")
-        with open(placeholder, "w") as f:
-            f.write("""# Common Voice Download
+    print("\n[1/3] Downloading Common Voice — Indian English (CC-0)...")
+    print(f"      Max hours per gender: {max_hours}")
 
-Install the datasets library and run:
-    pip install datasets
-    python -m indian_tts.data.preprocess --source common_voice --output data/
+    cv_dir = os.path.join(output_dir, "common_voice")
+    male_dir = os.path.join(cv_dir, "male")
+    female_dir = os.path.join(cv_dir, "female")
+    os.makedirs(male_dir, exist_ok=True)
+    os.makedirs(female_dir, exist_ok=True)
 
-Or download manually from:
-    https://commonvoice.mozilla.org/en/datasets
-    (Select 'English' and filter for Indian accents)
-""")
-        return dataset_dir
+    # Load with streaming to avoid downloading the entire 100GB+ dataset
+    print("      Loading dataset (streaming mode)...")
+    ds = load_dataset(
+        "mozilla-foundation/common_voice_17_0",
+        "en",
+        split="train",
+        streaming=True,
+        trust_remote_code=True,
+    )
+
+    entries = []
+    male_seconds = 0.0
+    female_seconds = 0.0
+    max_seconds = max_hours * 3600
+    skipped_no_accent = 0
+    skipped_no_gender = 0
+    skipped_quality = 0
+    skipped_duration = 0
+    processed = 0
+
+    for i, sample in enumerate(ds):
+        # Check if we have enough for both genders
+        if male_seconds >= max_seconds and female_seconds >= max_seconds:
+            break
+
+        # --- Filter: Indian accent ---
+        accent = (sample.get("accent") or "").lower().strip()
+        if "india" not in accent:
+            skipped_no_accent += 1
+            continue
+
+        # --- Filter: Known gender ---
+        gender = (sample.get("gender") or "").lower().strip()
+        if gender == "male_masculine" or gender == "male":
+            gender = "male"
+        elif gender == "female_feminine" or gender == "female":
+            gender = "female"
+        else:
+            skipped_no_gender += 1
+            continue
+
+        # Skip if this gender already has enough data
+        if gender == "male" and male_seconds >= max_seconds:
+            continue
+        if gender == "female" and female_seconds >= max_seconds:
+            continue
+
+        # --- Filter: Quality (upvotes) ---
+        up_votes = sample.get("up_votes", 0) or 0
+        down_votes = sample.get("down_votes", 0) or 0
+        if up_votes < min_upvotes or down_votes > up_votes:
+            skipped_quality += 1
+            continue
+
+        # --- Extract audio ---
+        audio_data = sample["audio"]
+        sr = audio_data["sampling_rate"]
+        array = np.array(audio_data["array"], dtype=np.float32)
+        duration = len(array) / sr
+
+        # --- Filter: Duration ---
+        if duration < min_duration or duration > max_duration:
+            skipped_duration += 1
+            continue
+
+        # --- Filter: Text ---
+        text = (sample.get("sentence") or "").strip()
+        if len(text) < 3:
+            continue
+
+        # --- Resample if needed ---
+        if sr != target_sr:
+            import torch
+            audio_tensor = torch.from_numpy(array).unsqueeze(0)
+            resampler = torchaudio.transforms.Resample(sr, target_sr)
+            array = resampler(audio_tensor).squeeze(0).numpy()
+
+        # --- Normalize audio ---
+        max_val = np.abs(array).max()
+        if max_val > 0:
+            array = array / max_val * 0.95
+
+        # --- Save ---
+        speaker_id = 0 if gender == "male" else 1
+        wav_dir = male_dir if gender == "male" else female_dir
+        filename = f"cv_{processed:06d}.wav"
+        filepath = os.path.join(wav_dir, filename)
+        sf.write(filepath, array, target_sr)
+
+        entries.append({
+            "audio_path": filepath,
+            "speaker_id": speaker_id,
+            "text": text,
+            "duration": len(array) / target_sr,
+        })
+
+        if gender == "male":
+            male_seconds += duration
+        else:
+            female_seconds += duration
+        processed += 1
+
+        if processed % 200 == 0:
+            print(
+                f"      Processed {processed} clips | "
+                f"Male: {male_seconds/3600:.2f}h | "
+                f"Female: {female_seconds/3600:.2f}h"
+            )
+
+    print(f"\n      Common Voice Results:")
+    print(f"        Total clips: {processed}")
+    print(f"        Male:   {male_seconds/3600:.2f} hours")
+    print(f"        Female: {female_seconds/3600:.2f} hours")
+    print(f"        Skipped (no Indian accent): {skipped_no_accent}")
+    print(f"        Skipped (no gender label):  {skipped_no_gender}")
+    print(f"        Skipped (low quality):      {skipped_quality}")
+    print(f"        Skipped (bad duration):     {skipped_duration}")
+
+    return entries
 
 
-def process_indic_tts(raw_dir: str, output_dir: str, target_sr: int = 22050) -> List[Dict]:
+# ===========================================================================
+# Google FLEURS Downloader (CC-BY 4.0)
+# ===========================================================================
+
+def download_fleurs(
+    output_dir: str,
+    target_sr: int = 22050,
+    min_duration: float = 1.0,
+    max_duration: float = 15.0,
+) -> List[Dict]:
     """
-    Process IndicTTS raw data into training format.
+    Download Google FLEURS — Indian English (en_in).
+
+    License: CC-BY 4.0. Free for commercial use with attribution.
+    Attribution: "Google FLEURS dataset, licensed under CC-BY 4.0."
+
+    The en_in subset contains ~10-15 hours of Indian English speech
+    with gender labels.
 
     Args:
-        raw_dir: Path to raw IndicTTS data
-        output_dir: Path to save processed data
+        output_dir: Where to save processed audio files
         target_sr: Target sampling rate
 
     Returns:
         List of manifest entries
     """
-    import librosa
+    try:
+        from datasets import load_dataset
+        import torchaudio
+        import torch
+    except ImportError:
+        print("ERROR: Required packages not installed.")
+        print("Run: pip install datasets torchaudio")
+        return []
 
-    manifest = []
-    processed_dir = os.path.join(output_dir, "processed")
-    os.makedirs(processed_dir, exist_ok=True)
+    print("\n[2/3] Downloading FLEURS — Indian English (CC-BY 4.0)...")
 
-    for gender in ["male", "female"]:
-        speaker_id = 0 if gender == "male" else 1
-        wav_dir = os.path.join(raw_dir, "english", gender, "wav")
-        txt_dir = os.path.join(raw_dir, "english", gender, "txt")
+    fleurs_dir = os.path.join(output_dir, "fleurs")
+    male_dir = os.path.join(fleurs_dir, "male")
+    female_dir = os.path.join(fleurs_dir, "female")
+    os.makedirs(male_dir, exist_ok=True)
+    os.makedirs(female_dir, exist_ok=True)
 
-        if not os.path.exists(wav_dir):
-            print(f"  Skipping {gender}: {wav_dir} not found")
+    entries = []
+
+    for split in ["train", "validation", "test"]:
+        print(f"      Loading {split} split...")
+        try:
+            ds = load_dataset("google/fleurs", "en_in", split=split, trust_remote_code=True)
+        except Exception as e:
+            print(f"      Warning: Could not load {split}: {e}")
             continue
 
-        wav_files = sorted([f for f in os.listdir(wav_dir) if f.endswith(".wav")])
-        out_wav_dir = os.path.join(processed_dir, gender)
-        os.makedirs(out_wav_dir, exist_ok=True)
+        for i, sample in enumerate(ds):
+            audio_data = sample["audio"]
+            sr = audio_data["sampling_rate"]
+            array = np.array(audio_data["array"], dtype=np.float32)
+            duration = len(array) / sr
 
-        for wav_file in wav_files:
-            wav_path = os.path.join(wav_dir, wav_file)
-            txt_file = wav_file.replace(".wav", ".txt")
-            txt_path = os.path.join(txt_dir, txt_file)
-
-            if not os.path.exists(txt_path):
+            if duration < min_duration or duration > max_duration:
                 continue
 
-            # Read text
-            with open(txt_path, "r", encoding="utf-8") as f:
-                text = f.read().strip()
-
-            if not text:
+            text = (sample.get("transcription") or "").strip()
+            if len(text) < 3:
                 continue
 
-            # Load and process audio
-            try:
-                audio, sr = librosa.load(wav_path, sr=target_sr)
-            except Exception as e:
-                print(f"  Error loading {wav_path}: {e}")
+            # FLEURS has gender: 0=male, 1=female
+            gender_val = sample.get("gender", -1)
+            if gender_val == 0:
+                speaker_id = 0
+                wav_dir = male_dir
+            elif gender_val == 1:
+                speaker_id = 1
+                wav_dir = female_dir
+            else:
                 continue
 
-            # Trim silence
-            audio, _ = librosa.effects.trim(audio, top_db=30)
+            # Resample
+            if sr != target_sr:
+                audio_tensor = torch.from_numpy(array).unsqueeze(0)
+                resampler = torchaudio.transforms.Resample(sr, target_sr)
+                array = resampler(audio_tensor).squeeze(0).numpy()
 
-            duration = len(audio) / target_sr
-            if duration < 0.5 or duration > 15.0:
-                continue
+            # Normalize
+            max_val = np.abs(array).max()
+            if max_val > 0:
+                array = array / max_val * 0.95
 
-            # Save processed audio
-            out_path = os.path.join(out_wav_dir, wav_file)
-            sf.write(out_path, audio, target_sr)
+            filename = f"fleurs_{split}_{i:05d}.wav"
+            filepath = os.path.join(wav_dir, filename)
+            sf.write(filepath, array, target_sr)
 
-            manifest.append({
-                "audio_path": out_path,
+            entries.append({
+                "audio_path": filepath,
                 "speaker_id": speaker_id,
                 "text": text,
-                "duration": duration,
+                "duration": len(array) / target_sr,
             })
 
-    return manifest
+    male_count = sum(1 for e in entries if e["speaker_id"] == 0)
+    female_count = sum(1 for e in entries if e["speaker_id"] == 1)
+    total_hours = sum(e["duration"] for e in entries) / 3600
+    print(f"\n      FLEURS Results:")
+    print(f"        Total clips: {len(entries)}")
+    print(f"        Male:   {male_count} clips")
+    print(f"        Female: {female_count} clips")
+    print(f"        Total:  {total_hours:.2f} hours")
 
+    return entries
+
+
+# ===========================================================================
+# Manifest Creation
+# ===========================================================================
 
 def create_manifests(
     entries: List[Dict],
@@ -277,18 +360,7 @@ def create_manifests(
     test_ratio: float = 0.05,
     seed: int = 42,
 ) -> Tuple[str, str, str]:
-    """
-    Create train/val/test manifest files.
-
-    Args:
-        entries: List of data entries
-        output_dir: Where to save manifests
-        val_ratio: Fraction for validation
-        test_ratio: Fraction for test
-
-    Returns:
-        Paths to (train, val, test) manifest files
-    """
+    """Create train/val/test manifest files."""
     random.seed(seed)
     random.shuffle(entries)
 
@@ -314,17 +386,39 @@ def create_manifests(
     write_manifest(val_path, val_entries)
     write_manifest(test_path, test_entries)
 
-    print(f"Created manifests: train={len(train_entries)}, val={len(val_entries)}, test={len(test_entries)}")
+    print(f"\nManifests created: train={len(train_entries)}, val={len(val_entries)}, test={len(test_entries)}")
     return train_path, val_path, test_path
 
 
-def create_sample_data(output_dir: str, n_samples: int = 20) -> str:
-    """
-    Create synthetic sample data for testing the pipeline.
+def write_attribution_file(output_dir: str, sources_used: List[str]):
+    """Write attribution file (required for CC-BY licensed data)."""
+    attr_path = os.path.join(output_dir, "ATTRIBUTION.md")
+    with open(attr_path, "w") as f:
+        f.write("# Dataset Attribution\n\n")
+        f.write("This model was trained using the following datasets:\n\n")
 
-    Generates sine-wave audio with random text to verify
-    the entire training pipeline works before using real data.
-    """
+        if "common_voice" in sources_used:
+            f.write("## Mozilla Common Voice\n")
+            f.write("- License: CC-0 1.0 Universal (Public Domain)\n")
+            f.write("- URL: https://commonvoice.mozilla.org/\n")
+            f.write("- No attribution required (public domain)\n\n")
+
+        if "fleurs" in sources_used:
+            f.write("## Google FLEURS\n")
+            f.write("- License: CC-BY 4.0 International\n")
+            f.write("- URL: https://huggingface.co/datasets/google/fleurs\n")
+            f.write("- Attribution: Google FLEURS dataset by Google Research,\n")
+            f.write("  licensed under Creative Commons Attribution 4.0 International.\n\n")
+
+    print(f"Attribution file written to: {attr_path}")
+
+
+# ===========================================================================
+# Sample Data (for pipeline testing)
+# ===========================================================================
+
+def create_sample_data(output_dir: str, n_samples: int = 20) -> str:
+    """Create synthetic sample data for testing the pipeline without downloading."""
     sample_dir = os.path.join(output_dir, "sample")
     os.makedirs(os.path.join(sample_dir, "wav"), exist_ok=True)
 
@@ -355,15 +449,13 @@ def create_sample_data(output_dir: str, n_samples: int = 20) -> str:
     sr = 22050
 
     for i in range(n_samples):
-        # Generate dummy audio (sine wave with varying frequency)
         duration = random.uniform(1.0, 5.0)
         t = np.linspace(0, duration, int(sr * duration))
         freq = random.uniform(200, 400)
         audio = 0.3 * np.sin(2 * np.pi * freq * t).astype(np.float32)
-        # Add some variation
         audio *= np.linspace(0.5, 1.0, len(audio)).astype(np.float32)
 
-        speaker_id = i % 2  # Alternate male/female
+        speaker_id = i % 2
         filename = f"sample_{i:04d}.wav"
         filepath = os.path.join(sample_dir, "wav", filename)
         sf.write(filepath, audio, sr)
@@ -379,63 +471,106 @@ def create_sample_data(output_dir: str, n_samples: int = 20) -> str:
     return create_manifests(entries, output_dir, val_ratio=0.1, test_ratio=0.1)[0]
 
 
+# ===========================================================================
+# Main
+# ===========================================================================
+
 def main():
-    parser = argparse.ArgumentParser(description="Preprocess data for Indian TTS")
-    parser.add_argument("--config", type=str, default="configs/base_config.yaml")
-    parser.add_argument("--output", type=str, default="data")
+    parser = argparse.ArgumentParser(
+        description="Download and prepare Indian English TTS training data (license-safe)"
+    )
+    parser.add_argument("--output", type=str, default="data", help="Output directory")
     parser.add_argument(
         "--source",
         type=str,
-        default="sample",
-        choices=["indic_tts", "common_voice", "sample", "all"],
-        help="Data source to process",
+        default="all",
+        choices=["common_voice", "fleurs", "sample", "all"],
+        help="Data source(s) to download",
     )
-    parser.add_argument("--indic-tts-dir", type=str, default=None, help="Path to raw IndicTTS data")
-    parser.add_argument("--max-hours", type=float, default=20.0, help="Max hours for Common Voice")
-
+    parser.add_argument(
+        "--max-hours",
+        type=float,
+        default=20.0,
+        help="Max hours per gender for Common Voice (default: 20)",
+    )
+    parser.add_argument(
+        "--target-sr",
+        type=int,
+        default=22050,
+        help="Target sampling rate (default: 22050)",
+    )
+    parser.add_argument(
+        "--min-upvotes",
+        type=int,
+        default=2,
+        help="Minimum upvotes for Common Voice quality filter (default: 2)",
+    )
     args = parser.parse_args()
+
     os.makedirs(args.output, exist_ok=True)
 
-    all_entries = []
+    # Print license info
+    print_license_info()
 
-    if args.source in ("sample",):
+    if args.source == "sample":
         print("Creating sample data for pipeline testing...")
         create_sample_data(args.output)
-        print("Done! Sample data created. Use --source indic_tts or common_voice for real data.")
+        print("\nDone! Use --source all to download real Indian English data.")
         return
 
-    if args.source in ("indic_tts", "all"):
-        if args.indic_tts_dir:
-            print("Processing IndicTTS data...")
-            entries = process_indic_tts(args.indic_tts_dir, args.output)
-            all_entries.extend(entries)
-            print(f"  Processed {len(entries)} IndicTTS samples")
-        else:
-            print("Setting up IndicTTS directory structure...")
-            download_indic_tts(args.output)
-            print("  Please download the dataset manually (see instructions in data/indic_tts/README.md)")
+    all_entries = []
+    sources_used = []
 
+    # --- Common Voice (CC-0) ---
     if args.source in ("common_voice", "all"):
-        print("Downloading Common Voice Indian English...")
-        cv_dir = download_common_voice(args.output, args.max_hours)
-        manifest_path = os.path.join(cv_dir, "manifest.json")
-        if os.path.exists(manifest_path):
-            with open(manifest_path) as f:
-                entries = json.load(f)
-            all_entries.extend(entries)
-            print(f"  Loaded {len(entries)} Common Voice samples")
+        entries = download_common_voice(
+            args.output,
+            max_hours=args.max_hours,
+            target_sr=args.target_sr,
+            min_upvotes=args.min_upvotes,
+        )
+        all_entries.extend(entries)
+        if entries:
+            sources_used.append("common_voice")
 
+    # --- FLEURS (CC-BY 4.0) ---
+    if args.source in ("fleurs", "all"):
+        entries = download_fleurs(args.output, target_sr=args.target_sr)
+        all_entries.extend(entries)
+        if entries:
+            sources_used.append("fleurs")
+
+    # --- Create manifests ---
     if all_entries:
+        print("\n" + "=" * 70)
+        print("[3/3] Creating training manifests...")
         create_manifests(all_entries, args.output)
-        print(f"\nTotal: {len(all_entries)} samples ready for training")
+        write_attribution_file(args.output, sources_used)
 
-        # Print statistics
-        male_count = sum(1 for e in all_entries if e["speaker_id"] == 0)
-        female_count = sum(1 for e in all_entries if e["speaker_id"] == 1)
-        total_hours = sum(e.get("duration", 0) for e in all_entries) / 3600
-        print(f"  Male samples: {male_count}")
-        print(f"  Female samples: {female_count}")
-        print(f"  Total duration: {total_hours:.2f} hours")
+        # Statistics
+        male_entries = [e for e in all_entries if e["speaker_id"] == 0]
+        female_entries = [e for e in all_entries if e["speaker_id"] == 1]
+        male_hours = sum(e["duration"] for e in male_entries) / 3600
+        female_hours = sum(e["duration"] for e in female_entries) / 3600
+
+        print(f"\n{'=' * 70}")
+        print(f"DATASET READY FOR TRAINING")
+        print(f"{'=' * 70}")
+        print(f"  Total samples: {len(all_entries)}")
+        print(f"  Male samples:   {len(male_entries)} ({male_hours:.2f} hours)")
+        print(f"  Female samples: {len(female_entries)} ({female_hours:.2f} hours)")
+        print(f"  Total duration: {male_hours + female_hours:.2f} hours")
+        print(f"\n  Manifest files:")
+        print(f"    Train: {args.output}/train.txt")
+        print(f"    Val:   {args.output}/val.txt")
+        print(f"    Test:  {args.output}/test.txt")
+        print(f"\n  All data is CC-0 or CC-BY 4.0 licensed.")
+        print(f"  See {args.output}/ATTRIBUTION.md for details.")
+        print(f"{'=' * 70}")
+    else:
+        print("\nERROR: No data downloaded. Check your internet connection and try again.")
+        print("You may need to accept the Common Voice terms on HuggingFace first:")
+        print("  https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
 
 
 if __name__ == "__main__":
