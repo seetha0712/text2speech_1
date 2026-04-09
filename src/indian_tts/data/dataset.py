@@ -102,6 +102,7 @@ class TTSDataset(Dataset):
             "spec_length": spec.shape[1],
             "audio": audio,
             "speaker_id": item["speaker_id"],
+            "raw_text": item["text"],  # Original text for BERT
         }
 
 
@@ -137,6 +138,9 @@ class TTSCollator:
             audio_padded[i, :al] = b["audio"]
             speaker_ids[i] = b["speaker_id"]
 
+        # Collect raw texts for BERT
+        raw_texts = [b.get("raw_text", "") for b in batch]
+
         return {
             "text": text_padded,
             "text_lengths": text_lengths,
@@ -144,4 +148,5 @@ class TTSCollator:
             "spec_lengths": spec_lengths,
             "audio": audio_padded,
             "speaker_ids": speaker_ids,
+            "raw_texts": raw_texts,
         }

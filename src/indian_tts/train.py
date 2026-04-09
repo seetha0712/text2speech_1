@@ -257,6 +257,7 @@ class Trainer:
                 spec=batch["spec"],
                 spec_lengths=batch["spec_lengths"],
                 speaker_ids=batch["speaker_ids"],
+                raw_texts=batch.get("raw_texts"),
             )
 
             y_hat = outputs["audio"]  # Generated audio
@@ -352,6 +353,7 @@ class Trainer:
                 spec=batch["spec"],
                 spec_lengths=batch["spec_lengths"],
                 speaker_ids=batch["speaker_ids"],
+                raw_texts=batch.get("raw_texts"),
             )
 
             total_mel_loss += outputs.get("dp_loss", torch.tensor(0.0)).item()
@@ -405,9 +407,8 @@ class Trainer:
         )
 
     def _save_checkpoint(self, tag: str):
-        """Save training checkpoint."""
-        path = os.path.join(self.checkpoint_dir, f"checkpoint_{tag}.pt")
-        torch.save({
+        """Save training checkpoint to local AND backup directory."""
+        ckpt_data = {
             "global_step": self.global_step,
             "epoch": self.epoch,
             "generator": self.generator.state_dict(),
@@ -418,8 +419,23 @@ class Trainer:
             "scheduler_d": self.scheduler_d.state_dict(),
             "scaler": self.scaler.state_dict(),
             "config": self.config,
-        }, path)
+        }
+
+        # Save locally
+        path = os.path.join(self.checkpoint_dir, f"checkpoint_{tag}.pt")
+        torch.save(ckpt_data, path)
         print(f"  Saved checkpoint: {path}")
+
+        # Save to backup directory (Google Drive or persistent storage)
+        backup_dir = self.config.get("paths", {}).get("backup_dir")
+        if backup_dir and os.path.isdir(backup_dir):
+            import shutil
+            backup_path = os.path.join(backup_dir, f"checkpoint_{tag}.pt")
+            try:
+                shutil.copy2(path, backup_path)
+                print(f"  Backed up to: {backup_path}")
+            except Exception as e:
+                print(f"  Backup failed (non-fatal): {e}")
 
         # Cleanup old checkpoints
         self._cleanup_checkpoints()
