@@ -115,12 +115,25 @@ def download_limmits(output_dir: str, target_sr: int = 22050) -> Tuple[str, str,
     print("\n  Scanning for audio/text pairs...")
 
     entries = []
-    for gender, prefix in [("male", "en_m"), ("female", "en_f")]:
+    for gender, folder in [("male", "English_M"), ("female", "English_F")]:
         speaker_id = 0 if gender == "male" else 1
-        wav_files = sorted(Path(raw_dir).rglob(f"{prefix}_*.wav"))
+
+        # LIMMITS structure: English_F/wav/*.wav and English_F/txt/*.txt
+        wav_dir = os.path.join(raw_dir, folder, "wav")
+        txt_dir = os.path.join(raw_dir, folder, "txt")
+
+        if not os.path.isdir(wav_dir):
+            # Fallback: try flat structure
+            wav_files = sorted(Path(raw_dir).rglob(f"en_{gender[0]}_*.wav"))
+        else:
+            wav_files = sorted(Path(wav_dir).glob("*.wav"))
 
         for wav_path in wav_files:
-            txt_path = wav_path.with_suffix(".txt")
+            stem = wav_path.stem
+            # Try txt in dedicated txt/ dir first, then same dir
+            txt_path = Path(txt_dir) / f"{stem}.txt" if os.path.isdir(txt_dir) else None
+            if txt_path is None or not txt_path.exists():
+                txt_path = wav_path.with_suffix(".txt")
             if not txt_path.exists():
                 continue
 
