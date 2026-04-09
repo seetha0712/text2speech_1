@@ -1,5 +1,5 @@
 """
-Text and Posterior Encoders for VITS2.
+Text and Posterior Encoders for Bert-VITS2.
 """
 
 import math
@@ -17,10 +17,12 @@ from indian_tts.model.modules import (
 
 class TextEncoder(nn.Module):
     """
-    Transformer-based text encoder.
+    Transformer-based text encoder with optional BERT conditioning.
 
-    Converts phoneme ID sequences into hidden representations
-    and predicts prior distribution parameters (mu, sigma) for the latent space.
+    When BERT features are provided, they are added to the phoneme
+    embeddings before the transformer layers. This gives the model
+    contextual understanding of the text (greetings vs statements,
+    questions vs answers) which improves prosody naturally.
     """
 
     def __init__(
@@ -33,14 +35,24 @@ class TextEncoder(nn.Module):
         kernel_size: int,
         dropout: float = 0.1,
         out_channels: int = 192,
+        use_bert: bool = False,
     ):
         super().__init__()
         self.hidden_channels = hidden_channels
         self.out_channels = out_channels
+        self.use_bert = use_bert
 
         # Phoneme embedding
         self.emb = nn.Embedding(n_vocab, hidden_channels)
         nn.init.normal_(self.emb.weight, 0.0, hidden_channels ** -0.5)
+
+        # BERT feature projection (if using BERT)
+        if use_bert:
+            # Learnable gate to blend BERT features with phoneme embeddings
+            self.bert_gate = nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels),
+                nn.Sigmoid(),
+            )
 
         # Positional encoding
         self.pos_enc = SinusoidalPositionalEncoding(hidden_channels)
@@ -58,12 +70,16 @@ class TextEncoder(nn.Module):
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(
-        self, x: torch.Tensor, x_lengths: torch.Tensor
+        self,
+        x: torch.Tensor,
+        x_lengths: torch.Tensor,
+        bert_features: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x: Phoneme IDs (B, T_text)
             x_lengths: Lengths of phoneme sequences (B,)
+            bert_features: Optional BERT embeddings (B, H, T_text) — already aligned
 
         Returns:
             x: Encoder output (B, H, T_text)
@@ -77,6 +93,17 @@ class TextEncoder(nn.Module):
         # Embed phonemes
         x = self.emb(x) * math.sqrt(self.hidden_channels)  # (B, T, H)
         x = x.transpose(1, 2)  # (B, H, T)
+
+        # Add BERT features if available
+        if self.use_bert and bert_features is not None:
+            # Ensure BERT features match phoneme sequence length
+            if bert_features.size(2) != x.size(2):
+                bert_features = torch.nn.functional.interpolate(
+                    bert_features, size=x.size(2), mode="linear", align_corners=False
+                )
+            # Gated addition: learn how much BERT influence to add
+            gate = self.bert_gate(bert_features.transpose(1, 2)).transpose(1, 2)
+            x = x + gate * bert_features
 
         # Add positional encoding
         x = x + self.pos_enc(x)

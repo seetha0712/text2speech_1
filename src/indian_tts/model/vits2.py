@@ -75,6 +75,10 @@ class VITS2Config:
     n_speakers: int = 2
     speaker_embed_dim: int = 256
 
+    # BERT
+    use_bert: bool = False
+    bert_model_name: str = "microsoft/deberta-v3-base"
+
     # Audio
     segment_size: int = 8192
     hop_length: int = 256
@@ -122,6 +126,8 @@ class VITS2Config:
             dp_filter_channels=dp.get("filter_channels", 256),
             n_speakers=model_cfg.get("n_speakers", 2),
             speaker_embed_dim=model_cfg.get("speaker_embed_dim", 256),
+            use_bert=model_cfg.get("use_bert", False),
+            bert_model_name=model_cfg.get("bert_model_name", "microsoft/deberta-v3-base"),
             segment_size=audio_cfg.get("segment_size", 8192),
             hop_length=audio_cfg.get("hop_length", 256),
         )
@@ -147,7 +153,19 @@ class VITS2(nn.Module):
 
         gin_channels = config.speaker_embed_dim if config.n_speakers > 1 else 0
 
-        # Text Encoder
+        # BERT feature extractor (optional)
+        self.use_bert = config.use_bert
+        if config.use_bert:
+            from indian_tts.model.bert_encoder import BertFeatureExtractor
+            self.bert = BertFeatureExtractor(
+                bert_model_name=config.bert_model_name,
+                output_dim=config.text_enc_hidden,
+                freeze_bert=True,
+            )
+        else:
+            self.bert = None
+
+        # Text Encoder (with BERT support)
         self.text_encoder = TextEncoder(
             n_vocab=config.n_vocab,
             hidden_channels=config.text_enc_hidden,
@@ -157,6 +175,7 @@ class VITS2(nn.Module):
             kernel_size=config.text_enc_kernel,
             dropout=config.text_enc_dropout,
             out_channels=config.latent_channels,
+            use_bert=config.use_bert,
         )
 
         # Posterior Encoder
@@ -209,6 +228,7 @@ class VITS2(nn.Module):
         spec: torch.Tensor,
         spec_lengths: torch.Tensor,
         speaker_ids: Optional[torch.Tensor] = None,
+        raw_texts: Optional[list] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Training forward pass.
@@ -219,6 +239,7 @@ class VITS2(nn.Module):
             spec: Linear spectrogram (B, F, T_spec)
             spec_lengths: Spectrogram lengths (B,)
             speaker_ids: Speaker IDs (B,) — 0=male, 1=female
+            raw_texts: Original text strings for BERT (B,) — only needed if use_bert=True
 
         Returns:
             Dictionary of outputs for loss computation
@@ -228,8 +249,15 @@ class VITS2(nn.Module):
         if self.speaker_emb is not None and speaker_ids is not None:
             g = self.speaker_emb(speaker_ids).unsqueeze(-1)  # (B, spk_dim, 1)
 
-        # Text encoder
-        x, m_p, logs_p, x_mask = self.text_encoder(text, text_lengths)
+        # BERT features (if enabled)
+        bert_features = None
+        if self.use_bert and self.bert is not None and raw_texts is not None:
+            bert_features = self.bert.get_features_aligned(
+                raw_texts, text_lengths, text.device
+            )
+
+        # Text encoder (with optional BERT conditioning)
+        x, m_p, logs_p, x_mask = self.text_encoder(text, text_lengths, bert_features)
 
         # Posterior encoder
         z, m_q, logs_q, y_mask = self.posterior_encoder(spec, spec_lengths, g)
@@ -307,6 +335,7 @@ class VITS2(nn.Module):
         noise_scale: float = 0.667,
         noise_scale_w: float = 0.8,
         length_scale: float = 1.0,
+        raw_texts: Optional[list] = None,
     ) -> torch.Tensor:
         """
         Inference: Generate speech from text.
@@ -327,8 +356,15 @@ class VITS2(nn.Module):
         if self.speaker_emb is not None and speaker_id is not None:
             g = self.speaker_emb(speaker_id).unsqueeze(-1)
 
+        # BERT features (if enabled)
+        bert_features = None
+        if self.use_bert and self.bert is not None and raw_texts is not None:
+            bert_features = self.bert.get_features_aligned(
+                raw_texts, text_lengths, text.device
+            )
+
         # Text encoder
-        x, m_p, logs_p, x_mask = self.text_encoder(text, text_lengths)
+        x, m_p, logs_p, x_mask = self.text_encoder(text, text_lengths, bert_features)
 
         # Predict durations
         w = self.duration_predictor(x, x_mask, cond=g, reverse=True, noise_scale=noise_scale_w)
