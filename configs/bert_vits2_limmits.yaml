@@ -75,7 +75,11 @@ training:
   betas: [0.8, 0.99]
   eps: 1.0e-9
   weight_decay: 0.01
-  lr_decay: 0.999875
+
+  # LR schedule: use slow decay so LR stays meaningful through 200K+ steps
+  # 0.999975 at 200K steps = LR * 0.007 (still learning)
+  # 0.999875 was WAY too fast (LR reached 0 by step 40K)
+  lr_decay: 0.999975
 
   # H100: batch_size 32 (BERT uses extra VRAM)
   # RTX 4090: batch_size 16
